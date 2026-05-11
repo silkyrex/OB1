@@ -10,6 +10,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const OPENROUTER_API_KEY = Deno.env.get("OPENROUTER_API_KEY")!;
 const MCP_ACCESS_KEY = Deno.env.get("MCP_ACCESS_KEY")!;
+const TRADING_ERA = Deno.env.get("TRADING_ERA") ?? "paper";
 
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -85,16 +86,20 @@ server.registerTool(
       query: z.string().describe("What to search for"),
       limit: z.number().optional().default(10),
       threshold: z.number().optional().default(0.5),
+      filter: z.record(z.unknown()).optional().describe(
+        "JSONB metadata containment filter. Example: {\"agent\":\"locker\",\"sector\":\"SEMI\"}. " +
+        "Returns only thoughts whose metadata @> filter. Combine with semantic query for hybrid search."
+      ),
     },
   },
-  async ({ query, limit, threshold }) => {
+  async ({ query, limit, threshold, filter }) => {
     try {
       const qEmb = await getEmbedding(query);
       const { data, error } = await supabase.rpc("match_thoughts", {
         query_embedding: qEmb,
         match_threshold: threshold,
         match_count: limit,
-        filter: {},
+        filter: filter ?? {},
       });
 
       if (error) {
@@ -167,9 +172,10 @@ server.registerTool(
       topic: z.string().optional().describe("Filter by topic tag"),
       person: z.string().optional().describe("Filter by person mentioned"),
       days: z.number().optional().describe("Only thoughts from the last N days"),
+      era: z.string().optional().describe("Filter by trading era: paper or live"),
     },
   },
-  async ({ limit, type, topic, person, days }) => {
+  async ({ limit, type, topic, person, days, era }) => {
     try {
       let q = supabase
         .from("thoughts")
@@ -180,6 +186,7 @@ server.registerTool(
       if (type) q = q.contains("metadata", { type });
       if (topic) q = q.contains("metadata", { topics: [topic] });
       if (person) q = q.contains("metadata", { people: [person] });
+      if (era) q = q.contains("metadata", { era });
       if (days) {
         const since = new Date();
         since.setDate(since.getDate() - days);
@@ -318,7 +325,7 @@ server.registerTool(
 
       const { data: upsertResult, error: upsertError } = await supabase.rpc("upsert_thought", {
         p_content: content,
-        p_payload: { metadata: { ...metadata, source: "mcp" } },
+        p_payload: { metadata: { ...metadata, source: "mcp", era: TRADING_ERA } },
       });
 
       if (upsertError) {
@@ -373,6 +380,25 @@ const corsHeaders = {
 const app = new Hono();
 
 // CORS preflight — required for browser/Electron-based clients (Claude Desktop, claude.ai)
+
+// Gate API proxy routes (trading-gate web app)
+const GATE_INTERNAL = 'http://localhost:8889';
+
+app.get('/locker', async (c) => {
+  try {
+    const r = await fetch(GATE_INTERNAL + '/locker');
+    return c.json(await r.json());
+  } catch { return c.json({ error: 'gate unavailable' }, 503); }
+});
+
+app.get('/gate', async (c) => {
+  const ticker = c.req.query('ticker') ?? '';
+  try {
+    const r = await fetch(GATE_INTERNAL + '/gate?ticker=' + ticker);
+    return c.json(await r.json());
+  } catch { return c.json({ error: 'gate unavailable' }, 503); }
+});
+
 app.options("*", (c) => {
   return c.text("ok", 200, corsHeaders);
 });
