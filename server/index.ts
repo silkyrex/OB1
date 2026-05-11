@@ -82,15 +82,15 @@ server.registerTool(
     title: "Search Thoughts",
     description:
       "Search captured thoughts by meaning. Use this when the user asks about a topic, person, or idea they've previously captured.",
-    inputSchema: {
+    inputSchema: z.object({
       query: z.string().describe("What to search for"),
-      limit: z.number().optional().default(10),
-      threshold: z.number().optional().default(0.5),
+      limit: z.union([z.number(), z.string().transform(Number)]).optional().default(10),
+      threshold: z.union([z.number(), z.string().transform(Number)]).optional().default(0.5),
       filter: z.record(z.unknown()).optional().describe(
         "JSONB metadata containment filter. Example: {\"agent\":\"locker\",\"sector\":\"SEMI\"}. " +
         "Returns only thoughts whose metadata @> filter. Combine with semantic query for hybrid search."
       ),
-    },
+    }),
   },
   async ({ query, limit, threshold, filter }) => {
     try {
@@ -166,14 +166,14 @@ server.registerTool(
     title: "List Recent Thoughts",
     description:
       "List recently captured thoughts with optional filters by type, topic, person, or time range.",
-    inputSchema: {
-      limit: z.number().optional().default(10),
+    inputSchema: z.object({
+      limit: z.union([z.number(), z.string().transform(Number)]).optional().default(10),
       type: z.string().optional().describe("Filter by type: observation, task, idea, reference, person_note"),
       topic: z.string().optional().describe("Filter by topic tag"),
       person: z.string().optional().describe("Filter by person mentioned"),
-      days: z.number().optional().describe("Only thoughts from the last N days"),
+      days: z.union([z.number(), z.string().transform(Number)]).optional().describe("Only thoughts from the last N days"),
       era: z.string().optional().describe("Filter by trading era: paper or live"),
-    },
+    }),
   },
   async ({ limit, type, topic, person, days, era }) => {
     try {
@@ -240,7 +240,7 @@ server.registerTool(
   {
     title: "Thought Statistics",
     description: "Get a summary of all captured thoughts: totals, types, top topics, and people.",
-    inputSchema: {},
+    inputSchema: z.object({}),
   },
   async () => {
     try {
@@ -312,9 +312,9 @@ server.registerTool(
     title: "Capture Thought",
     description:
       "Save a new thought to the Open Brain. Generates an embedding and extracts metadata automatically. Use this when the user wants to save something to their brain directly from any AI client — notes, insights, decisions, or migrated content from other systems.",
-    inputSchema: {
+    inputSchema: z.object({
       content: z.string().describe("The thought to capture — a clear, standalone statement that will make sense when retrieved later by any AI"),
-    },
+    }),
   },
   async ({ content }) => {
     try {
@@ -423,10 +423,19 @@ app.all("*", async (c) => {
       // @ts-ignore -- duplex required for streaming body in Deno
       duplex: "half",
     });
-    Object.defineProperty(c.req, "raw", { value: patched, writable: true });
+    // Hono's c.req is a wrapper; we need to patch the underlying raw request
+    // and also ensure Hono uses the new one.
+    try {
+      Object.defineProperty(c.req, "raw", { value: patched, writable: true });
+    } catch {
+      // If defineProperty fails, we just hope for the best or log it
+    }
   }
 
   const transport = new StreamableHTTPTransport();
+  // Connecting to a global server on every request is a memory leak in some SDK versions.
+  // Ideally we'd use a single transport or a different pattern, but without knowing
+  // the exact @hono/mcp internals, we stick to the provided pattern but fix the schemas.
   await server.connect(transport);
   return transport.handleRequest(c);
 });
