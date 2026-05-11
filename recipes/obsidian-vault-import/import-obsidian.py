@@ -62,6 +62,14 @@ LLM_MODEL = "openai/gpt-4o-mini"
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2  # seconds, doubles each retry
 
+# Frontmatter fields whitelisted into thought.metadata for structured JSONB queries (TRA-183).
+# Allows queries like: metadata @> {"agent":"locker","stage5_today":true}
+FRONTMATTER_METADATA_WHITELIST = {
+    "tickers", "agent", "category", "sector", "sizing",
+    "stage5_today", "scans", "days_on_list", "earnings_finviz",
+    "updated", "is_anchor",
+}
+
 # Secret detection patterns — (label, compiled regex)
 SECRET_PATTERNS = [
     ("OpenAI/OpenRouter API key", re.compile(r'sk-(?:or-v1-|proj-|live-)?[a-zA-Z0-9]{20,}')),
@@ -705,6 +713,16 @@ def main():
             }
             if chunk['section']:
                 thought['metadata']['section'] = chunk['section']
+
+            # TRA-183: merge whitelisted frontmatter fields for structured queries
+            import datetime as _dt
+            for _fm_key in FRONTMATTER_METADATA_WHITELIST:
+                _fm_val = note['meta'].get(_fm_key)
+                if _fm_val is None or _fm_val == "" or _fm_val == []:
+                    continue
+                if isinstance(_fm_val, (_dt.date, _dt.datetime)):
+                    _fm_val = _fm_val.isoformat()
+                thought['metadata'][_fm_key] = _fm_val
 
             all_thoughts.append(thought)
 
